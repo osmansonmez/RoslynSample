@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>netcoreapp3.1</TargetFramework>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <ErrorReport>queue</ErrorReport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SampleLibrary1\SampleLibrary1.csproj" />
+    <ProjectReference Include="..\SampleLibrary2\SampleLibrary2.csproj" />
+  </ItemGroup>
+
+</Project>
