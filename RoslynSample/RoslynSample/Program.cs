@@ -1,5 +1,7 @@
 ﻿using Microsoft.Build.Locator;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.MSBuild;
 using System;
 using System.Collections.Generic;
@@ -15,20 +17,18 @@ namespace RoslynSample
     {
         static async Task Main(string[] args)
         {
-            var directory = @"C:\Users\EOS\source\repos\SampleApp1";
+            var directory = new DirectoryInfo(@"..\..\..\..\SampleApp1");
 
-            BuildSolution(directory);
+            BuildSolution(directory.FullName);
+
             var instances = MSBuildLocator.QueryVisualStudioInstances().ToList();
-            var msbuildDeploymentToUse = AskWhichMSBuildToUse(instances);
-
-            MSBuildLocator.RegisterDefaults();
-
+            MSBuildLocator.RegisterInstance(instances.First());
 
             using (var workspace = MSBuildWorkspace.Create())
             {
-                var sln = Path.Combine(directory, "SampleApp1.sln");
+                var sln = Path.Combine(directory.FullName, "SampleApp1.sln");
                 var solution = await workspace.OpenSolutionAsync(sln);
-                var projects =  solution.Projects;
+                var projects = solution.Projects;
                 foreach (var project in projects)
                 {
                     Console.WriteLine(project.Name);
@@ -39,19 +39,152 @@ namespace RoslynSample
                         Console.WriteLine(diag.ToString());
                     }
 
+                    var errorCount = diagnostics.Where(x => x.Severity == DiagnosticSeverity.Error);
+
                     var documents = project.Documents;
+                    foreach (var document in documents)
+                    {
+                        await ProcessDocument(document, solution, project, compilation);
+                    }
                 }
             }
             Console.ReadLine();
         }
 
-        private static void ProcessDocument(Document document, Solution sln, Project project, Compilation compilation)
+        private static async Task ProcessDocument(Document document, Solution sln, Project project, Compilation compilation)
         {
+            SemanticModel semanticModel = await document.GetSemanticModelAsync();
+            var syntaxTree = semanticModel.SyntaxTree;
+            var root = syntaxTree.GetRoot();
+
+            var classes = root.DescendantNodes()
+                .OfType<ClassDeclarationSyntax>();
+
+            foreach (var cls in classes)
+            {
+                await ProcessClass(cls, sln, semanticModel, compilation);
+            }
+
+            var interfaces = root.DescendantNodes()
+     .OfType<InterfaceDeclarationSyntax>();
+        }
+
+        public static async Task ProcessClass(ClassDeclarationSyntax cls, Solution solution, SemanticModel semanticModel, Compilation compilation)
+        {
+            var classSignature = semanticModel.GetDeclaredSymbol(cls);
+            Console.WriteLine(classSignature.ToString());
+
+            var methods = cls.DescendantNodes()
+              .OfType<MethodDeclarationSyntax>();
+
+            var constucterList = cls.DescendantNodes()
+                      .OfType<ConstructorDeclarationSyntax>().Where(method =>
+              method.Modifiers.Where(modifier =>
+                  modifier.Kind() == SyntaxKind.PublicKeyword)
+              .Any());
+
+            SyntaxList<AttributeListSyntax> clsAttributes = cls.AttributeLists;
+
+            var variableList = cls.DescendantNodes().OfType<VariableDeclarationSyntax>();
+
+            foreach (var item in variableList)
+            {
+                foreach (var variable in item.Variables)
+                {
+                    Console.WriteLine(variable.Identifier.ValueText.ToString());
+
+                }
+            }
+
+            var variableAssignments = cls.DescendantNodes().OfType<AssignmentExpressionSyntax>();
+
+            foreach (var variableAssignment in variableAssignments)
+            {
+
+                Console.WriteLine($"Left: {variableAssignment.Left}, Right: {variableAssignment.Right}");
+
+            }
+
+            foreach (var method in methods)
+            {
+             await   ProcessMethod(method, cls, solution, semanticModel, compilation);
+            }
+            await Task.CompletedTask;
+        }
+
+        public static async Task ProcessMethod(MethodDeclarationSyntax Method, ClassDeclarationSyntax cls, Solution sln, SemanticModel semanticModel, Compilation compilation)
+        {
+            var methodSymbol = semanticModel.GetDeclaredSymbol(Method);
+            Console.WriteLine(methodSymbol.ToString()); //AppTest.B.ADD(int)
+
+            var arguments = Method.ParameterList.Parameters;
+            foreach (var arg in arguments)
+            {
+                var typeInfo = semanticModel.GetTypeInfo(arg.ChildNodes().First());
+                Console.WriteLine($"param Name : {arg.Identifier.ToString()}, type : {typeInfo.Type.ToString()}");
+                
+            }
+
+            var invocationList = Method.DescendantNodes()
+                      .OfType<InvocationExpressionSyntax>();
+
+            foreach (var invocation in invocationList)
+            {
+                await ProcessInvocation(invocation, sln, semanticModel, cls);
+            }
+
+            await Task.CompletedTask;
 
         }
 
-        private static void ProcessClasses(Document document, Solution sln, Project project, Compilation compilation)
+        public static async Task ProcessInvocation(InvocationExpressionSyntax invocation, Solution solution, SemanticModel semanticModel, ClassDeclarationSyntax cls)
         {
+            string methodName = string.Empty;
+            var expr = invocation.Expression;
+            if (expr is IdentifierNameSyntax r)
+            {
+                methodName = r.GetFirstToken().ValueText;
+            }
+
+            if (expr is MemberAccessExpressionSyntax m)
+            {
+                methodName = m.Name.GetFirstToken().ValueText;
+            }
+
+            Console.WriteLine(methodName);
+
+            var invokedSymbol = semanticModel.GetSymbolInfo(invocation).Symbol;
+            var symbolInfo = semanticModel.GetSymbolInfo(invocation);
+
+            //TODO dynamic nesne geliyor!!!!
+            if (symbolInfo.CandidateSymbols != null && symbolInfo.CandidateSymbols.Count() > 0)
+            {
+                invokedSymbol = symbolInfo.CandidateSymbols.First();
+            }
+
+            if (invokedSymbol == null)
+            {
+
+                invokedSymbol = semanticModel.GetDeclaredSymbol(invocation);
+
+            }
+
+            IMethodSymbol methodSymbol = invokedSymbol as IMethodSymbol;
+
+            Console.WriteLine(invokedSymbol.ToString()); //AppTest.B.ADD(int)
+            int param = 0;
+            
+            foreach (var arg in invocation.ArgumentList.Arguments)
+            {
+                var typeInfo = semanticModel.GetTypeInfo(arg.ChildNodes().First());
+                var value = arg.Expression.GetFirstToken().ValueText;
+
+                Console.WriteLine($"argName: { methodSymbol.Parameters[param].Name}, argType: {typeInfo.Type.ToString()}, Value:{arg.GetFirstToken().ValueText}");
+                param++;
+            }
+          
+
+            await Task.CompletedTask;
 
         }
 
